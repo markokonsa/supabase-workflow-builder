@@ -1,6 +1,3 @@
-// Plain TanStack Start + Nitro config (replaces @lovable.dev/vite-tanstack-config).
-// Workflow SDK needs Nitro in dev as well as in build, and its plugin must run first;
-// the Lovable wrapper only adds Nitro on build and appends user plugins last.
 import { defineConfig, loadEnv } from "vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
