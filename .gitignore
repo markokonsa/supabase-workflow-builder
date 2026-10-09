@@ -35,3 +35,8 @@ dist-ssr
 *.env
 !.env.example
 exported/*.mjs
+node_modules/*
+.well-known/*
+.workflow-data
+.tanstack
+.exported
