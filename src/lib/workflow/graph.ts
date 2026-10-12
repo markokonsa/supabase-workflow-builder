@@ -11,6 +11,8 @@ export interface FlowNode {
 export interface FlowEdge {
   source: string;
   target: string;
+  /** Which output of a branching node (condition rule id, else, event, timeout). */
+  sourceHandle?: string | null | undefined;
 }
 
 export interface FlowGraph {
@@ -29,7 +31,7 @@ export function toFlowGraph(nodes: readonly FlowNode[], edges: readonly FlowEdge
       for (const k of SECRET_KEYS) delete config[k];
       return { id: n.id, data: { kind: n.data.kind, label: n.data.label, config: config as NodeConfig } };
     }),
-    edges: edges.map((e) => ({ source: e.source, target: e.target })),
+    edges: edges.map((e) => ({ source: e.source, target: e.target, ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}) })),
   };
 }
 
@@ -52,3 +54,26 @@ export function topoOrder(graph: FlowGraph): string[] {
   if (order.length !== graph.nodes.length) throw new Error("Workflow contains a cycle");
   return order;
 }
+
+/**
+ * Whether an edge carries a value: its source produced output and, for branching nodes,
+ * the edge leaves from a branch that fired. Mirrors edgeActive() in engine.mjs.
+ */
+export function edgeActive(e: FlowEdge, ctx: Record<string, unknown>, branches: Record<string, string[]>): boolean {
+  if (ctx[e.source] === undefined) return false;
+  const fired = branches[e.source];
+  return !e.sourceHandle || !fired || fired.includes(e.sourceHandle);
+}
+
+/** "30s" / "5m" / "1h" / "2d" / "250ms" / plain milliseconds → ms. Mirrors parseDuration() in engine.mjs. */
+export function parseDuration(value: string | number | undefined, fallbackMs = 5 * 60_000): number {
+  if (value === undefined || value === "") return fallbackMs;
+  if (typeof value === "number") return value;
+  const m = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?$/i.exec(value.trim());
+  if (!m) throw new Error(`Invalid duration "${value}" (use e.g. 30s, 5m, 1h)`);
+  const unit = (m[2] ?? "ms").toLowerCase() as "ms" | "s" | "m" | "h" | "d";
+  return Math.round(Number(m[1]) * { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[unit]);
+}
+
+/** Token a durable run's hook node listens on; POST /api/flows/hooks/<token> resumes it. */
+export const hookToken = (runId: string, nodeId: string) => `flow:${runId}:${nodeId}`;

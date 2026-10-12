@@ -6,6 +6,7 @@ import tsConfigPaths from "vite-tsconfig-paths";
 import { workflow } from "workflow/vite";
 
 import { workflowEngineSource } from "./engine-source.plugin";
+import { nitro } from "nitro/vite";
 
 export default defineConfig(({ mode }) => {
   // Load .env, .env.local, .env.[mode], .env.[mode].local into process.env for server code
@@ -28,6 +29,7 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [
       workflow(), // must be first: transforms "use workflow" / "use step" before other plugins
+      nitro(),
       workflowEngineSource(),
       tailwindcss(),
       tsConfigPaths({ projects: ["./tsconfig.json"] }),

@@ -46,6 +46,70 @@ export function parseJson(src, scope, field) {
   }
 }
 
+/** "30s" / "5m" / "1h" / "2d" / "250ms" / plain milliseconds → ms. Mirrors parseDuration() in graph.ts. */
+export function parseDuration(value, fallbackMs = 5 * 60_000) {
+  if (value === undefined || value === null || value === "") return fallbackMs;
+  if (typeof value === "number") return value;
+  const m = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?$/i.exec(String(value).trim());
+  if (!m) throw fatal(`Invalid duration "${value}" (use e.g. 30s, 5m, 1h)`);
+  const unit = (m[2] || "ms").toLowerCase();
+  return Math.round(Number(m[1]) * { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[unit]);
+}
+
+/**
+ * Whether an edge carries a value: its source produced output and, for branching nodes
+ * (condition, hook), the edge leaves from a branch that fired. Mirrors edgeActive() in graph.ts.
+ */
+export function edgeActive(e, ctx, branches) {
+  if (ctx[e.source] === undefined) return false;
+  const fired = branches[e.source];
+  return !e.sourceHandle || !fired || fired.includes(e.sourceHandle);
+}
+
+const asNumber = (s) => (s.trim() !== "" && !Number.isNaN(Number(s)) ? Number(s) : null);
+
+/** Evaluate one condition rule. Both sides are templated to strings first. */
+export function evaluateRule(rule, scope) {
+  const left = template(rule.left, scope);
+  const right = template(rule.right ?? "", scope);
+  const a = asNumber(left);
+  const b = asNumber(right);
+  const both = a !== null && b !== null;
+  switch (rule.op) {
+    case "==":
+      return both ? a === b : left === right;
+    case "!=":
+      return both ? a !== b : left !== right;
+    case ">":
+      return both ? a > b : left > right;
+    case ">=":
+      return both ? a >= b : left >= right;
+    case "<":
+      return both ? a < b : left < right;
+    case "<=":
+      return both ? a <= b : left <= right;
+    case "contains":
+      return left.includes(right);
+    case "not_contains":
+      return !left.includes(right);
+    case "matches":
+      try {
+        return new RegExp(right).test(left);
+      } catch {
+        throw fatal(`Invalid regex in condition "${rule.label || rule.id}": ${right}`);
+      }
+    case "exists":
+      return left !== "" && left !== "null";
+    case "empty":
+      return ["", "null", "[]", "{}", '""'].includes(left.trim());
+    default:
+      throw fatal(`Unknown condition operator: ${rule.op}`);
+  }
+}
+
+/** Node kinds that talk to Supabase and need a client. */
+export const NEEDS_CLIENT = new Set(["edge", "rpc", "query"]);
+
 export function topo(nodes, edges) {
   const indeg = new Map(nodes.map((n) => [n.id, 0]));
   edges.forEach((e) => indeg.set(e.target, (indeg.get(e.target) ?? 0) + 1));
@@ -95,8 +159,9 @@ export async function clientForAuth(auth, conn) {
 
 /**
  * Execute one node.
- * env: { client, conn, prev, ctx, input? }
- * Returns { out } and, for auth nodes, { auth, client } — the new auth state for downstream nodes.
+ * env: { client, conn, prev, ctx, input?, nodeId?, waitForHook? }
+ * Returns { out }; auth nodes add { auth, client } (the new auth state for downstream nodes);
+ * branching nodes add { branches } (the output handles that fired) and { note } for the log.
  */
 export async function executeNode(data, env) {
   const c = data.config || {};
@@ -167,6 +232,59 @@ export async function executeNode(data, env) {
       const fn = new Function("prev", "ctx", c.code);
       return { out: await fn(prev, ctx) };
     }
+    case "condition": {
+      const rules = Array.isArray(c.rules) ? c.rules : [];
+      const matched = [];
+      for (const rule of rules) {
+        if (!evaluateRule(rule, scope)) continue;
+        matched.push(rule.id);
+        if (c.mode !== "all") break;
+      }
+      const branches = matched.length ? matched : ["else"];
+      const names = branches.map((id) => (id === "else" ? "else" : rules.find((r) => r.id === id)?.label || id));
+      return { out: prev, branches, note: `→ ${names.join(", ")}` };
+    }
+    case "http": {
+      const url = template(c.url, scope).trim();
+      if (!url) throw fatal("URL is required");
+      const method = c.method || "GET";
+      const headers = { ...parseJson(c.headers, scope, "headers") };
+      let body;
+      if (method !== "GET" && c.body && c.body.trim()) {
+        body = template(c.body, scope);
+        const hasType = Object.keys(headers).some((h) => h.toLowerCase() === "content-type");
+        if (!hasType) {
+          try {
+            JSON.parse(body);
+            headers["Content-Type"] = "application/json";
+          } catch {
+            headers["Content-Type"] = "text/plain";
+          }
+        }
+      }
+      const res = await fetch(url, { method, headers, body });
+      const text = await res.text();
+      let parsed = text;
+      try {
+        parsed = text ? JSON.parse(text) : null;
+      } catch {
+        /* not JSON: keep the text */
+      }
+      const out = { status: res.status, ok: res.ok, headers: Object.fromEntries(res.headers), body: parsed };
+      if (!res.ok && c.onError !== "continue") {
+        const e = new Error(`HTTP ${res.status} ${res.statusText}: ${text.slice(0, 200)}`);
+        e.status = res.status;
+        throw e;
+      }
+      return { out, note: `${method} ${res.status}` };
+    }
+    case "hook": {
+      if (!env.waitForHook) throw fatal("This runner can't wait for hooks");
+      const timeoutMs = parseDuration(c.timeout);
+      const r = await env.waitForHook({ nodeId: env.nodeId ?? "", label: data.label, timeoutMs, port: c.port || "" });
+      if (r.timedOut) return { out: { timedOut: true, prev }, branches: ["timeout"], note: `timed out after ${c.timeout || "5m"}` };
+      return { out: r.payload ?? null, branches: ["event"], note: "triggered" };
+    }
     case "output":
       return { out: prev };
     default:
@@ -183,27 +301,38 @@ export function errorMessage(err) {
  * conn: { url, anonKey, serviceKey?, password? } — serviceKey/password are fallbacks
  *   used when an auth node leaves those fields empty (the exported CLI fills them from env).
  * opts.input: when defined, Start nodes emit this value instead of their configured payload.
+ * opts.waitForHook({ nodeId, label, timeoutMs, port }) → { payload } | { timedOut: true }:
+ *   how this runner receives hook triggers (a button in the canvas, a local HTTP server in the CLI).
  */
 export async function runWorkflow(nodes, edges, conn, onStatus, log, opts = {}) {
-  let { client } = await clientForAuth({ role: "anon" }, conn);
+  // Created on first use, so flows without Supabase nodes need no keys.
+  let client;
   const ctx = {};
+  const branches = {};
   const order = topo(nodes, edges);
   const byId = new Map(nodes.map((n) => [n.id, n]));
 
   for (const id of order) {
     const d = byId.get(id).data;
     const incoming = edges.filter((e) => e.target === id);
-    if (incoming.length && incoming.every((e) => ctx[e.source] === undefined)) continue; // upstream failed
-    const prev = incoming.length ? ctx[incoming[0].source] : undefined;
+    const live = incoming.filter((e) => edgeActive(e, ctx, branches));
+    if (incoming.length && !live.length) {
+      log({ nodeId: id, label: d.label, status: "idle", message: "skipped (branch not taken or upstream failed)" });
+      continue;
+    }
+    const prev = live.length ? ctx[live[0].source] : undefined;
     onStatus(id, "running");
     const t0 = performance.now();
     try {
-      const r = await executeNode(d, { client, conn, prev, ctx, input: opts.input });
+      if (!client && NEEDS_CLIENT.has(d.kind)) client = (await clientForAuth({ role: "anon" }, conn)).client;
+      const r = await executeNode(d, { client, conn, prev, ctx, input: opts.input, nodeId: id, waitForHook: opts.waitForHook });
       if (r.client) client = r.client;
+      if (r.branches) branches[id] = r.branches;
       ctx[id] = r.out ?? null;
       const ms = Math.round(performance.now() - t0);
       onStatus(id, "success", r.out);
-      log({ nodeId: id, label: d.label, status: "success", message: JSON.stringify(r.out)?.slice(0, 300) ?? "null", ms });
+      const json = JSON.stringify(r.out)?.slice(0, 300) ?? "null";
+      log({ nodeId: id, label: d.label, status: "success", message: r.note ? `${r.note} · ${json}` : json, ms });
     } catch (err) {
       const message = errorMessage(err);
       onStatus(id, "error", { error: message });

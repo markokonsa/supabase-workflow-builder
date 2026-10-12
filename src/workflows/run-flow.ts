@@ -1,10 +1,13 @@
 // The durable workflow: walks the graph in topological order and runs every node
 // as its own step. Runs in the Workflow SDK sandbox, so it only orchestrates —
 // all I/O happens inside the steps.
-import { topoOrder, type FlowGraph } from "../lib/workflow/graph";
-import type { NodeKind } from "../lib/workflow/types";
+import { createHook, getWorkflowMetadata, sleep } from "workflow";
+import { edgeActive, hookToken, parseDuration, topoOrder, type FlowGraph } from "../lib/workflow/graph";
+import type { HookConfig, NodeKind } from "../lib/workflow/types";
 import {
   authStep,
+  conditionStep,
+  httpStep,
   dbFunctionStep,
   dbQueryStep,
   edgeFunctionStep,
@@ -17,13 +20,16 @@ import {
   type StepOutput,
 } from "./steps";
 
-const STEP_BY_KIND: Record<NodeKind, (args: StepInput) => Promise<StepOutput>> = {
+// Hook nodes aren't steps: they wait inside the workflow itself (see runFlow).
+const STEP_BY_KIND: Record<Exclude<NodeKind, "hook">, (args: StepInput) => Promise<StepOutput>> = {
   start: webhookStep,
   auth: authStep,
   edge: edgeFunctionStep,
   rpc: dbFunctionStep,
   query: dbQueryStep,
   transform: scriptStep,
+  condition: conditionStep,
+  http: httpStep,
   output: resultStep,
 };
 
@@ -54,6 +60,7 @@ export async function runFlow(
   const order = topoOrder(graph);
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const ctx: Record<string, unknown> = {};
+  const branches: Record<string, string[]> = {};
   const logs: FlowLogEntry[] = [];
   let auth: StepAuth = { role: "anon" };
   let failed = false;
@@ -61,20 +68,34 @@ export async function runFlow(
   for (const id of order) {
     const node = byId.get(id)!;
     const incoming = graph.edges.filter((e) => e.target === id);
-    if (incoming.length && incoming.every((e) => ctx[e.source] === undefined)) {
-      logs.push({ nodeId: id, label: node.data.label, status: "skipped", message: "upstream failed" });
+    const live = incoming.filter((e) => edgeActive(e, ctx, branches));
+    if (incoming.length && !live.length) {
+      logs.push({ nodeId: id, label: node.data.label, status: "skipped", message: "branch not taken or upstream failed" });
       continue;
     }
-    const prev = incoming.length ? ctx[incoming[0]!.source] : undefined;
+    const prev = live.length ? ctx[live[0]!.source] : undefined;
     try {
+      if (node.data.kind === "hook") {
+        // Durable wait: resumed by POST /api/flows/hooks/<token>, or the timer wins.
+        const cfg = node.data.config as HookConfig;
+        const hook = createHook<unknown>({ token: hookToken(getWorkflowMetadata().workflowRunId, id) });
+        const got = await Promise.race([hook.then((payload) => ({ payload })), sleep(parseDuration(cfg.timeout)).then(() => null)]);
+        hook.dispose();
+        ctx[id] = got ? (got.payload ?? null) : { timedOut: true, prev };
+        branches[id] = [got ? "event" : "timeout"];
+        logs.push({ nodeId: id, label: node.data.label, status: "success", message: got ? "triggered" : `timed out after ${cfg.timeout || "5m"}` });
+        continue;
+      }
       const r = await STEP_BY_KIND[node.data.kind]({ node, prev, ctx, input, auth, conn });
       ctx[id] = r.out ?? null;
       if (r.auth) auth = r.auth;
+      if (r.branches) branches[id] = r.branches;
+      const json = JSON.stringify(r.out)?.slice(0, 300) ?? "null";
       logs.push({
         nodeId: id,
         label: node.data.label,
         status: "success",
-        message: JSON.stringify(r.out)?.slice(0, 300) ?? "null",
+        message: r.note ? `${r.note} · ${json}` : json,
         ms: r.ms,
       });
     } catch (err) {
@@ -85,8 +106,10 @@ export async function runFlow(
     }
   }
 
-  const outputIds = graph.nodes.filter((n) => n.data.kind === "output").map((n) => n.id);
-  const ids = outputIds.length ? outputIds : order.slice(-1);
+  // Result nodes that ran (others sat on branches not taken); without any, the last node that ran.
+  const ran = (ids: string[]) => ids.filter((id) => ctx[id] !== undefined);
+  const outputIds = ran(graph.nodes.filter((n) => n.data.kind === "output").map((n) => n.id));
+  const ids = outputIds.length ? outputIds : ran(order).slice(-1);
   const result = ids.length === 1 ? ctx[ids[0]!] : Object.fromEntries(ids.map((id) => [id, ctx[id]]));
   return { result: result ?? null, outputs: ctx, logs, failed };
 }

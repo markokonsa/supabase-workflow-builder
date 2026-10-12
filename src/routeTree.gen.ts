@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiFlowsRunRouteImport } from './routes/api/flows/run'
+import { Route as ApiFlowsHooksTokenRouteImport } from './routes/api/flows/hooks/$token'
 import { Route as ApiFlowsRunsRunIdRouteImport } from './routes/api/flows/runs/$runId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -23,6 +24,11 @@ const ApiFlowsRunRoute = ApiFlowsRunRouteImport.update({
   path: '/api/flows/run',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiFlowsHooksTokenRoute = ApiFlowsHooksTokenRouteImport.update({
+  id: '/api/flows/hooks/$token',
+  path: '/api/flows/hooks/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiFlowsRunsRunIdRoute = ApiFlowsRunsRunIdRouteImport.update({
   id: '/api/flows/runs/$runId',
   path: '/api/flows/runs/$runId',
@@ -32,30 +38,47 @@ const ApiFlowsRunsRunIdRoute = ApiFlowsRunsRunIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/flows/run': typeof ApiFlowsRunRoute
+  '/api/flows/hooks/$token': typeof ApiFlowsHooksTokenRoute
   '/api/flows/runs/$runId': typeof ApiFlowsRunsRunIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api/flows/run': typeof ApiFlowsRunRoute
+  '/api/flows/hooks/$token': typeof ApiFlowsHooksTokenRoute
   '/api/flows/runs/$runId': typeof ApiFlowsRunsRunIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/api/flows/run': typeof ApiFlowsRunRoute
+  '/api/flows/hooks/$token': typeof ApiFlowsHooksTokenRoute
   '/api/flows/runs/$runId': typeof ApiFlowsRunsRunIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/flows/run' | '/api/flows/runs/$runId'
+  fullPaths:
+    | '/'
+    | '/api/flows/run'
+    | '/api/flows/hooks/$token'
+    | '/api/flows/runs/$runId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/flows/run' | '/api/flows/runs/$runId'
-  id: '__root__' | '/' | '/api/flows/run' | '/api/flows/runs/$runId'
+  to:
+    | '/'
+    | '/api/flows/run'
+    | '/api/flows/hooks/$token'
+    | '/api/flows/runs/$runId'
+  id:
+    | '__root__'
+    | '/'
+    | '/api/flows/run'
+    | '/api/flows/hooks/$token'
+    | '/api/flows/runs/$runId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ApiFlowsRunRoute: typeof ApiFlowsRunRoute
+  ApiFlowsHooksTokenRoute: typeof ApiFlowsHooksTokenRoute
   ApiFlowsRunsRunIdRoute: typeof ApiFlowsRunsRunIdRoute
 }
 
@@ -75,6 +98,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFlowsRunRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/flows/hooks/$token': {
+      id: '/api/flows/hooks/$token'
+      path: '/api/flows/hooks/$token'
+      fullPath: '/api/flows/hooks/$token'
+      preLoaderRoute: typeof ApiFlowsHooksTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/flows/runs/$runId': {
       id: '/api/flows/runs/$runId'
       path: '/api/flows/runs/$runId'
@@ -88,6 +118,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ApiFlowsRunRoute: ApiFlowsRunRoute,
+  ApiFlowsHooksTokenRoute: ApiFlowsHooksTokenRoute,
   ApiFlowsRunsRunIdRoute: ApiFlowsRunsRunIdRoute,
 }
 export const routeTree = rootRouteImport

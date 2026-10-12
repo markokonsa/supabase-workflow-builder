@@ -40,3 +40,5 @@ node_modules/*
 .workflow-data
 .tanstack
 .exported
+.vercel
+.env*

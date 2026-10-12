@@ -1,7 +1,9 @@
 import engineSource from "virtual:workflow-engine-source";
 import cliSource from "virtual:workflow-cli-source";
-import type { Connection } from "./types";
-import { toFlowGraph, type FlowEdge, type FlowNode } from "./graph";
+import type { Node } from "@xyflow/react";
+import type { Connection, WFNodeData } from "./types";
+import { toFlowGraph } from "./graph";
+import { flowMeta } from "./flowfile";
 
 export function exportFileName(name = "workflow") {
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "workflow";
@@ -15,19 +17,22 @@ export function exportFileName(name = "workflow") {
  * Keys and passwords are stripped and read from env vars instead.
  */
 export function buildWorkflowScript(
-  nodes: readonly FlowNode[],
-  edges: readonly FlowEdge[],
+  nodes: readonly Node<WFNodeData>[],
+  edges: readonly { source: string; target: string }[],
   conn: Pick<Connection, "url">,
+  name = "workflow",
 ): string {
   const workflow = toFlowGraph(nodes, edges);
+  const file = exportFileName(name);
 
   const header = `#!/usr/bin/env node
-// Exported from sb/flow on ${new Date().toISOString()}
+// ${name} — exported from KOMA/flow on ${new Date().toISOString()}
+// Reopen it in the builder with Open… (the layout is kept in FLOW_META below).
 //
 // Run:
-//   bun ./${exportFileName()}                          # Bun installs @supabase/supabase-js on the fly
-//   npm i @supabase/supabase-js && node ./${exportFileName()}
-//   bun build --compile ./${exportFileName()} --outfile my-flow   # single executable
+//   bun ./${file}                          # Bun installs @supabase/supabase-js on the fly
+//   npm i @supabase/supabase-js && node ./${file}
+//   bun build --compile ./${file} --outfile my-flow   # single executable
 //
 // Env:
 //   SUPABASE_URL               (default: ${conn.url || "none — required"})
@@ -45,7 +50,8 @@ export function buildWorkflowScript(
     "// Exported workflow\n" +
     "// ---------------------------------------------------------------------------\n" +
     `const WORKFLOW = ${JSON.stringify(workflow, null, 2)};\n` +
-    `const DEFAULT_URL = ${JSON.stringify(conn.url || "")};\n\n`;
+    `const DEFAULT_URL = ${JSON.stringify(conn.url || "")};\n` +
+    `const FLOW_META = ${JSON.stringify(flowMeta(name, nodes))};\n\n`;
 
   return header + "\n" + engineSource.trimEnd() + "\n" + data + cliSource;
 }

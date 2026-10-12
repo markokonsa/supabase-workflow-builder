@@ -7,6 +7,7 @@ import {
   errorMessage,
   executeNode,
   isFatalError,
+  NEEDS_CLIENT,
   type EngineAuth,
   type EngineConnection,
 } from "../lib/workflow/engine.mjs";
@@ -40,6 +41,9 @@ export interface StepOutput {
   ms: number;
   /** Set by the auth step. */
   auth?: StepAuth;
+  /** Set by branching nodes: the output handles that fired. */
+  branches?: string[];
+  note?: string;
 }
 
 /**
@@ -88,13 +92,15 @@ async function execute({ node, prev, ctx, input, auth, conn: pub }: StepInput): 
     password: auth.password || process.env["WF_PASSWORD"] || ""
   });
   try {
-    // Clients don't survive between steps, so rebuild one for the current role.
-    const client = node.data.kind === "auth" ? undefined : (await clientForAuth(auth as EngineAuth, conn)).client;
+    // Clients don't survive between steps, so rebuild one for the current role — only for nodes that use it.
+    const client = NEEDS_CLIENT.has(node.data.kind) ? (await clientForAuth(auth as EngineAuth, conn)).client : undefined;
     const r = await executeNode(node.data, { client, conn, prev, ctx, input });
     return {
       out: r.out ?? null,
       ms: Math.round(performance.now() - t0),
       ...(r.auth ? { auth: { role: r.auth.role, email: r.auth.email } } : {}),
+      ...(r.branches ? { branches: r.branches } : {}),
+      ...(r.note ? { note: r.note } : {}),
     };
   } catch (err) {
     // Bad config and 4xx responses won't fix themselves — fail without retrying.
@@ -134,6 +140,16 @@ export async function scriptStep(args: StepInput) {
 }
 
 export async function resultStep(args: StepInput) {
+  "use step";
+  return execute(args);
+}
+
+export async function conditionStep(args: StepInput) {
+  "use step";
+  return execute(args);
+}
+
+export async function httpStep(args: StepInput) {
   "use step";
   return execute(args);
 }

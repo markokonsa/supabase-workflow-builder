@@ -23,7 +23,18 @@ export interface EngineNode {
 export interface EngineEdge {
   source: string;
   target: string;
+  sourceHandle?: string | null | undefined;
 }
+
+export interface HookWaitRequest {
+  nodeId: string;
+  label: string;
+  timeoutMs: number;
+  /** CLI only: port to listen on ("" = any free port). */
+  port: string;
+}
+export type HookWaitResult = { payload: unknown; timedOut?: false } | { timedOut: true };
+export type WaitForHook = (req: HookWaitRequest) => Promise<HookWaitResult>;
 
 export interface EngineConnection {
   url: string;
@@ -56,6 +67,8 @@ export interface ExecuteEnv {
   prev: unknown;
   ctx: Record<string, unknown>;
   input?: unknown;
+  nodeId?: string | undefined;
+  waitForHook?: WaitForHook | undefined;
 }
 
 export interface ExecuteResult {
@@ -63,8 +76,16 @@ export interface ExecuteResult {
   /** Set by auth nodes: the new auth state for downstream nodes. */
   auth?: EngineAuth;
   client?: SupabaseClient | undefined;
+  /** Branching nodes: output handles that fired. */
+  branches?: string[];
+  /** Short log note, e.g. "→ ok" or "GET 200". */
+  note?: string;
 }
 
+export function parseDuration(value: string | number | undefined, fallbackMs?: number): number;
+export function edgeActive(e: EngineEdge, ctx: Record<string, unknown>, branches: Record<string, string[]>): boolean;
+export function evaluateRule(rule: { id: string; label?: string; left: string; op: string; right?: string | undefined }, scope: Record<string, unknown>): boolean;
+export const NEEDS_CLIENT: Set<string>;
 export function template(input: string | undefined, scope: Record<string, unknown>): string;
 export function parseJson(src: string | undefined, scope: Record<string, unknown>, field: string): unknown;
 export function topo(nodes: EngineNode[], edges: EngineEdge[]): string[];
@@ -82,5 +103,5 @@ export function runWorkflow(
   conn: EngineConnection,
   onStatus: (id: string, status: NodeStatus, result?: unknown) => void,
   log: (e: LogEntry) => void,
-  opts?: { input?: unknown },
+  opts?: { input?: unknown; waitForHook?: WaitForHook | undefined },
 ): Promise<Record<string, unknown>>;
